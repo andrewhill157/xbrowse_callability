@@ -3,6 +3,15 @@ import os
 import glob
 import gzip
 
+# Path to sample BED files
+BED_FILES_PATH = '/humgen/atgu1/fs03/DM-Lab/projects/Muscle-Disease/North-64/callable/'
+
+# Paths to exome capture interval files on Broad cluster
+AGILENT_EXOME_CAPTURE_INTERVAL_PATH = '/humgen/atgu1/fs03/lek/resources/gatk/whole_exome_agilent_1.1_refseq_plus_3_boosters.Homo_sapiens_assembly19.targets.interval_list'
+ICE_EXOME_CAPTURE_INTERVAL_PATH = '/seq/references/HybSelOligos/whole_exome_illumina_coding_v1/whole_exome_illumina_coding_v1.Homo_sapiens_assembly19.targets.interval_list'
+
+# Path to summary file
+OUTPUT_FILE_PATH = 'summary.tsv'
 
 def get_low_coverage_intervals(bed_gz_file):
     """
@@ -66,62 +75,57 @@ def get_non_overlapping_count(interval1, interval2):
 ########################################################################################################################
 # Script
 ########################################################################################################################
+if __name__ == '__main__':
+    # Get all BED files on cluster
+    bed_files = glob.glob(os.path.join(BED_FILES_PATH, '*.bam.bed.gz'))
 
-# Specify paths BED files on Broad cluster
-bed_files_path = '/humgen/atgu1/fs03/DM-Lab/projects/Muscle-Disease/North-64/callable/'
-bed_files = glob.glob(os.path.join(bed_files_path, '*.bam.bed.gz'))
+    # Build interval trees for exome capture intervals
+    print 'Building Interval Trees...'
+    agilent_exome_capture_intervals = get_interval_list(AGILENT_EXOME_CAPTURE_INTERVAL_PATH)
+    ice_exome_capture_intervals = get_interval_list(ICE_EXOME_CAPTURE_INTERVAL_PATH)
 
-# Specify paths to exome capture interval files on Broad cluster
-agilent_exome_capture_interval_path = '/humgen/atgu1/fs03/lek/resources/gatk/whole_exome_agilent_1.1_refseq_plus_3_boosters.Homo_sapiens_assembly19.targets.interval_list'
-ice_exome_capture_interval_path = '/seq/references/HybSelOligos/whole_exome_illumina_coding_v1/whole_exome_illumina_coding_v1.Homo_sapiens_assembly19.targets.interval_list'
+    agilent_exome_capture = create_interval_trees(agilent_exome_capture_intervals)
+    ice_exome_capture = create_interval_trees(ice_exome_capture_intervals)
 
-# Build interval trees for exome capture intervals
-print 'Building Interval Trees...'
-agilent_exome_capture_intervals = get_interval_list(agilent_exome_capture_interval_path)
-ice_exome_capture_intervals = get_interval_list(ice_exome_capture_interval_path)
+    # Calculate how many bases fall outside each exome capture region for each sample BED file
+    print 'Processing BED Files...'
+    sample_entries = []
+    for path in bed_files:
 
-agilent_exome_capture = create_interval_trees(agilent_exome_capture_intervals)
-ice_exome_capture = create_interval_trees(ice_exome_capture_intervals)
+        low_coverage_base_count = 0
+        agilent_non_overlapping_count = 0
+        ice_non_overlapping_count = 0
 
-# Calculate how many bases fall outside each exome capture region for each sample BED file
-print 'Processing BED Files...'
-sample_entries = []
-for path in bed_files:
+        low_coverage_intervals = get_low_coverage_intervals(path)
 
-    low_coverage_base_count = 0
-    agilent_non_overlapping_count = 0
-    ice_non_overlapping_count = 0
+        for interval in low_coverage_intervals:
+            chromosome_number = interval[0]
+            start = int(interval[1])
+            stop = int(interval[2])
+            bounds = [start, stop]
 
-    low_coverage_intervals = get_low_coverage_intervals(path)
+            low_coverage_base_count += stop - start + 1
 
-    for interval in low_coverage_intervals:
-        chromosome_number = interval[0]
-        start = int(interval[1])
-        stop = int(interval[2])
-        bounds = [start, stop]
+            try:
+                agilent_exome_capture_overlap = agilent_exome_capture[chromosome_number].overlap(bounds)[0]
+                agilent_non_overlapping_count += get_non_overlapping_count(bounds, agilent_exome_capture_overlap)
+            except:
+                # No overlapping exome capture interval, add total length
+                agilent_non_overlapping_count += stop - start + 1
 
-        low_coverage_base_count += stop - start + 1
+            try:
+                ice_exome_capture_overlap = ice_exome_capture[chromosome_number].overlap(bounds)[0]
+                ice_non_overlapping_count += get_non_overlapping_count(bounds, ice_exome_capture_overlap)
+            except:
+                # No overlapping exome capture interval, add total length
+                ice_non_overlapping_count += stop - start + 1
 
-        try:
-            agilent_exome_capture_overlap = agilent_exome_capture[chromosome_number].overlap(bounds)[0]
-            agilent_non_overlapping_count += get_non_overlapping_count(bounds, agilent_exome_capture_overlap)
-        except:
-            # No overlapping exome capture interval, add total length
-            agilent_non_overlapping_count += stop - start + 1
+        # Assemble summary information
+        sample_id = os.path.splitext(os.path.basename(path))[0]
+        summary = [sample_id, str(low_coverage_base_count), str(agilent_non_overlapping_count), str(ice_non_overlapping_count)]
+        sample_entries.append(summary)
+        print summary
 
-        try:
-            ice_exome_capture_overlap = ice_exome_capture[chromosome_number].overlap(bounds)[0]
-            ice_non_overlapping_count += get_non_overlapping_count(bounds, ice_exome_capture_overlap)
-        except:
-            # No overlapping exome capture interval, add total length
-            ice_non_overlapping_count += stop - start + 1
-
-    # Assemble summary information
-    sample_id = os.path.splitext(os.path.basename(path))[0]
-    summary = [sample_id, str(low_coverage_base_count), str(agilent_non_overlapping_count), str(ice_non_overlapping_count)]
-    sample_entries.append(summary)
-    print summary
-
-# Write to summary file
-with open('summary.tsv', 'w') as f:
-    f.write('\n'.join(['\t'.join(x) for x in sample_entries]))
+    # Write to summary file
+    with open(OUTPUT_FILE_PATH, 'w') as f:
+        f.write('\n'.join(['\t'.join(x) for x in sample_entries]))
